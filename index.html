@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ScrobbleStats: your Last.fm listening stats</title>
+    <meta name="description" content="Upload your Last.fm CSV and explore your listening stats, with features shared between artists." />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <h1>ScrobbleStats</h1>
+      <p class="tagline">Upload your Last.fm CSV and explore your listening stats.</p>
+    </header>
+
+    <main>
+      <label
+        id="dropzone"
+        class="dropzone"
+        for="file"
+        tabindex="0"
+        role="button"
+        aria-label="Upload a Last.fm CSV file"
+      >
+        <span class="dz-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 16V4" />
+            <path d="M7 9l5-5 5 5" />
+            <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+          </svg>
+        </span>
+        <span class="dz-title">Drop your Last.fm CSV here</span>
+        <span class="dz-sub">or <span class="dz-cta">choose a file</span></span>
+        <span class="privacy">Everything runs in your browser. Nothing is uploaded.</span>
+      </label>
+      <input id="file" type="file" accept=".csv,.txt,text/csv" hidden />
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <section id="controls" class="controls" hidden></section>
+      <div id="results" class="results" hidden></div>
+    </main>
+
+    <footer>
+      <p>
+        Built for Last.fm. Features are shared between artists, and you can switch that off or
+        correct it by hand. Track minutes from MusicBrainz are coming soon.
+      </p>
+    </footer>
+
+    <script src="js/text.js"></script>
+    <script src="js/csv.js"></script>
+    <script src="js/artists.js"></script>
+    <script src="js/stats.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
