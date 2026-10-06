@@ -510,6 +510,85 @@
     }
     renderMappingList(mapList);
 
+    // Config file: export the manual relationships to a JSON file and load one back,
+    // so they do not have to be re-entered for every analysis or browser.
+    function exportConfig() {
+      var payload = {
+        version: 1,
+        mappings: state.mappings.map(function (x) {
+          return { trackKey: x.trackKey, song: x.song, artist: x.artist };
+        })
+      };
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = h('a', { href: url, download: 'scrobblestats-feats.json' });
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      statusEl.textContent = 'Exported ' + num(state.mappings.length) + ' relationship(s).';
+    }
+
+    function loadConfig(file) {
+      if (!file) return;
+      file.text().then(function (text) {
+        var data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          statusEl.textContent = 'That config file is not valid JSON.';
+          return;
+        }
+        var list = Array.isArray(data) ? data : data && Array.isArray(data.mappings) ? data.mappings : null;
+        if (!list) {
+          statusEl.textContent = 'That config file has no "mappings" list.';
+          return;
+        }
+        var added = 0;
+        list.forEach(function (item) {
+          if (!item || typeof item !== 'object') return;
+          var artist = typeof item.artist === 'string' ? item.artist.trim() : '';
+          if (!artist) return;
+          var tk = typeof item.trackKey === 'string' ? item.trackKey : '';
+          var song = typeof item.song === 'string' ? item.song : '';
+          if (!tk) tk = state.songIndex.get(song) || '';
+          if (!tk) return;
+          var dup = state.mappings.some(function (x) {
+            return x.trackKey === tk && nameKey(x.artist) === nameKey(artist);
+          });
+          if (dup) return;
+          state.mappings.push({ trackKey: tk, song: song || tk, artist: artist });
+          added++;
+        });
+        if (added) {
+          persist();
+          renderMappingList(mapList);
+          recompute();
+        }
+        statusEl.textContent = added
+          ? 'Loaded ' + num(added) + ' relationship(s) from the config.'
+          : 'No new relationships found in that config.';
+      }).catch(function (err) {
+        statusEl.textContent = 'Could not read that config: ' + err.message;
+      });
+    }
+
+    var importInput = h('input', { type: 'file', accept: '.json,application/json' });
+    importInput.hidden = true;
+    importInput.addEventListener('change', function () {
+      loadConfig(importInput.files[0]);
+    });
+    var exportBtn = h('button', { type: 'button', class: 'btn-ghost', text: 'Export config', onClick: exportConfig });
+    var importBtn = h('button', {
+      type: 'button',
+      class: 'btn-ghost',
+      text: 'Load config',
+      onClick: function () {
+        importInput.value = '';
+        importInput.click();
+      }
+    });
+
     controlsEl.appendChild(
       h('div', { class: 'control' }, [
         featsChk,
@@ -538,6 +617,13 @@
         h('p', { class: 'control-title', text: 'Credit an artist by hand' }),
         h('p', { class: 'control-hint', text: 'Pick a track from your data and the artist that should count for it too. Choose from the list or type a new one.' }),
         h('div', { class: 'control' }, [songInput, artistInput, addBtn]),
+        h('div', { class: 'control' }, [
+          h('span', { class: 'control-label', text: 'Config file' }),
+          exportBtn,
+          importBtn,
+          importInput
+        ]),
+        h('p', { class: 'control-hint', text: 'Export these relationships to a JSON file and load it back to reuse them in any analysis or browser.' }),
         mapList,
         datalists
       ])

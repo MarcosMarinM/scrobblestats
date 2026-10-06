@@ -40,6 +40,9 @@ them:
 - **Credit an artist by hand**: pick a track from your data (type and pick from the list) and the
   artist that should count for it too (choose from the list or type a new one). These
   relationships are always applied, and are saved in `localStorage` along with the feature toggle.
+- **Config file**: *Export config* downloads the manual relationships as
+  `scrobblestats-feats.json`, and *Load config* reads one back and merges it with what you already
+  have. Use it to keep the same manual feats across browsers or machines without re-entering them.
 
 The feature markers recognised are `feat`, `featuring`, `ft`, `with` and `f/` wherever they appear
 in a bracket, plus `con` and `y` when the bracket starts with them. `prod. by` and other credits
