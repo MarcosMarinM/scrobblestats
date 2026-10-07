@@ -91,6 +91,17 @@
     return artistKey(artist) + '\u0000' + looseTitleKey(title);
   }
 
+  var RE_EDITION = /\b(deluxe|deluxe edition|special edition|expanded edition|expanded|anniversary edition|bonus track version|bonus version|remastered|remaster)\b/;
+  var RE_TRAILING_QUALIFIER = /\s*[\(\[\{]([^\)\]\}]*)[\)\]\}]\s*$/;
+
+  /** Album name without a trailing edition qualifier, so "X (Deluxe)" and "X" match. */
+  function albumBase(name) {
+    var n = normaliseText(name);
+    var m = n.match(RE_TRAILING_QUALIFIER);
+    if (m && RE_EDITION.test(key(m[1]))) return n.slice(0, m.index).trim();
+    return n;
+  }
+
   SS.RE_SPACES = RE_SPACES;
   SS.RE_FEAT = RE_FEAT;
   SS.stripAccents = stripAccents;
@@ -102,4 +113,5 @@
   SS.looseTitleKey = looseTitleKey;
   SS.artistKey = artistKey;
   SS.trackKey = trackKey;
+  SS.albumBase = albumBase;
 })(typeof window !== 'undefined' ? window : typeof globalThis !== 'undefined' ? globalThis : this);

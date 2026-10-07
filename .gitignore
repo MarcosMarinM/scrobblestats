@@ -1,3 +1,7 @@
 engine.js
 .DS_Store
 .commandcode/
+
+# Never commit scrobble exports: they contain personal listening history.
+*.csv
+!test/fixtures/mini.csv

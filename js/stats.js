@@ -7,6 +7,7 @@
   var artistKey = SS.artistKey;
   var looseTitleKey = SS.looseTitleKey;
   var trackKey = SS.trackKey;
+  var albumBase = SS.albumBase;
   var creditedArtists = SS.creditedArtists;
 
   var DAY_MS = 86400000;
@@ -47,6 +48,115 @@
     return name;
   }
 
+  // Album names some players write when they do not know the real one.
+  var PLACEHOLDER_ALBUMS = { album: 1, unknown: 1, 'unknown album': 1, 'various artists': 1 };
+
+  /**
+   * Works out which release each track's plays should count under when singles are
+   * consolidated into albums. A track's plays are moved when they come from a junk
+   * release (a single: one track or named like the track; a scrobble with no album; or a
+   * placeholder album like "Album") and the track also has a real album (two or more
+   * tracks by the same artist, with a proper name). Only plays from those junk releases
+   * move; plays already on a real album are left where they are. The real album the track
+   * is played most becomes the destination.
+   * @param {Array} scrobbles
+   * @returns {Map} trackKey to { target: { key, album, artist }, sources: Set, empty: boolean }
+   */
+  function buildAlbumConsolidation(scrobbles) {
+    var trackReleases = new Map();
+    var releaseTracks = new Map();
+    var trackPlays = new Map();
+    var nameArtists = new Map();
+    var emptyTracks = new Set();
+
+    for (var i = 0; i < scrobbles.length; i++) {
+      var s = scrobbles[i];
+      var tk = trackKey(s.artist, s.title);
+      if (!s.album) { emptyTracks.add(tk); continue; }
+      var ak = artistKey(s.artist) + '\u0000' + key(s.album);
+
+      var releases = trackReleases.get(tk);
+      if (!releases) { releases = new Map(); trackReleases.set(tk, releases); }
+      if (!releases.has(ak)) {
+        releases.set(ak, { key: ak, album: s.album, artist: s.artist, titleKey: key(s.title) });
+      }
+
+      var tracks = releaseTracks.get(ak);
+      if (!tracks) { tracks = new Set(); releaseTracks.set(ak, tracks); }
+      tracks.add(tk);
+
+      var plays = trackPlays.get(tk);
+      if (!plays) { plays = new Map(); trackPlays.set(tk, plays); }
+      plays.set(ak, (plays.get(ak) || 0) + 1);
+
+      var name = key(s.album);
+      var artists = nameArtists.get(name);
+      if (!artists) { artists = new Set(); nameArtists.set(name, artists); }
+      artists.add(artistKey(s.artist));
+    }
+
+    // An album name shared by several artists is a compilation, not one artist's album.
+    var compilationNames = new Set();
+    nameArtists.forEach(function (artists, name) {
+      if (artists.size >= 3) compilationNames.add(name);
+    });
+
+    var map = new Map();
+    trackReleases.forEach(function (releases, tk) {
+      var sources = new Set();
+      var target = null;
+      var targetPlays = -1;
+      releases.forEach(function (r) {
+        var count = releaseTracks.get(r.key).size;
+        var singleLike = count === 1 || r.titleKey === key(r.album);
+        var placeholder = !!PLACEHOLDER_ALBUMS[key(r.album)];
+        var compilation = compilationNames.has(key(r.album));
+        if (singleLike || placeholder || compilation) sources.add(r.key);
+        if (singleLike || placeholder || compilation || count < 2) return; // not a real album
+        var plays = trackPlays.get(tk).get(r.key) || 0;
+        if (plays > targetPlays) { target = r; targetPlays = plays; }
+      });
+
+      if (!target) return;
+      if (!sources.size && !emptyTracks.has(tk)) return;
+      map.set(tk, { target: target, sources: sources, empty: emptyTracks.has(tk) });
+    });
+    return map;
+  }
+
+  /**
+   * Groups the different editions of the same album (for example "X" and "X (Deluxe)")
+   * so they count as one, and remembers how many versions there are.
+   * @param {Array} scrobbles
+   * @returns {Map} albumKey to { key, album, versions }
+   */
+  function buildAlbumVersions(scrobbles) {
+    var groups = new Map();
+    for (var i = 0; i < scrobbles.length; i++) {
+      var s = scrobbles[i];
+      if (!s.album) continue;
+      var base = artistKey(s.artist) + '\u0000' + key(albumBase(s.album));
+      var ak = artistKey(s.artist) + '\u0000' + key(s.album);
+      var members = groups.get(base);
+      if (!members) { members = new Map(); groups.set(base, members); }
+      var m = members.get(ak);
+      if (!m) { m = { key: ak, album: s.album, artist: s.artist, plays: 0 }; members.set(ak, m); }
+      m.plays++;
+    }
+
+    var map = new Map();
+    groups.forEach(function (members, base) {
+      if (members.size < 2) return;
+      var best = null;
+      members.forEach(function (m) { if (!best || m.plays > best.plays) best = m; });
+      var canonicalName = albumBase(best.album);
+      members.forEach(function (m, ak) {
+        map.set(ak, { key: base, album: canonicalName, versions: members.size });
+      });
+    });
+    return map;
+  }
+
   /**
    * @param {Array} scrobbles
    * @param {Object} [options]
@@ -57,6 +167,10 @@
     options = options || {};
     var feats = options.feats !== false;
     var mapping = options.mapping || null;
+    var albumMap = options.albumMap || null;
+    var albumVersions = options.albumVersions || null;
+    var hideSingles = !!options.hideSingles;
+    var artistMap = options.artistMap || null;
 
     var artists = new Map();
     var tracks = new Map();
@@ -81,9 +195,12 @@
       var credited = creditedArtists(s, { feats: feats, extra: extras });
       for (var c = 0; c < credited.length; c++) {
         var cr = credited[c];
-        var a = bump(artists, cr.key, function () {
-          return { key: cr.key, nameCounts: new Map(), plays: 0, asPrimary: 0, asFeatured: 0, first: NaN, last: NaN };
+        var mapped = artistMap ? artistMap.get(cr.key) : null;
+        var akey = mapped ? mapped.key : cr.key;
+        var a = bump(artists, akey, function () {
+          return { key: akey, nameCounts: new Map(), forcedName: mapped ? mapped.name : null, plays: 0, asPrimary: 0, asFeatured: 0, first: NaN, last: NaN };
         });
+        if (mapped) a.forcedName = mapped.name;
         a.plays++;
         if (cr.role === 'primary') a.asPrimary++;
         else a.asFeatured++;
@@ -98,11 +215,24 @@
         return { key: tk, title: s.title, artist: s.artist, plays: 0 };
       }).plays++;
 
-      if (s.album) {
-        var ak = artistKey(s.artist) + '\u0000' + key(s.album);
-        bump(albums, ak, function () {
-          return { key: ak, album: s.album, artist: s.artist, plays: 0 };
-        }).plays++;
+      var info = albumMap ? albumMap.get(tk) : null;
+      var useTarget = false;
+      if (info) {
+        useTarget = s.album
+          ? info.sources.has(artistKey(s.artist) + '\u0000' + key(s.album))
+          : info.empty;
+      }
+      if (s.album || useTarget) {
+        var ak = useTarget ? info.target.key : artistKey(s.artist) + '\u0000' + key(s.album);
+        var albumName = useTarget ? info.target.album : s.album;
+        var albumArtist = useTarget ? info.target.artist : s.artist;
+        var version = albumVersions ? albumVersions.get(ak) : null;
+        if (version) { ak = version.key; albumName = version.album; }
+        var alb = bump(albums, ak, function () {
+          return { key: ak, album: albumName, artist: albumArtist, plays: 0, versions: version ? version.versions : 1, tracks: new Set() };
+        });
+        alb.plays++;
+        alb.tracks.add(tk);
       }
 
       if (!isNaN(s.ts)) {
@@ -125,7 +255,7 @@
       .map(function (a) {
         return {
           key: a.key,
-          name: canonicalName(a.nameCounts),
+          name: a.forcedName || canonicalName(a.nameCounts),
           plays: a.plays,
           asPrimary: a.asPrimary,
           asFeatured: a.asFeatured,
@@ -141,9 +271,14 @@
       return y.plays - x.plays || (x.title < y.title ? -1 : 1);
     });
 
-    var albumList = Array.from(albums.values()).sort(function (x, y) {
-      return y.plays - x.plays || (x.album < y.album ? -1 : 1);
-    });
+    var albumList = Array.from(albums.values())
+      .filter(function (a) { return !hideSingles || a.tracks.size > 1; })
+      .map(function (a) {
+        return { key: a.key, album: a.album, artist: a.artist, plays: a.plays, versions: a.versions };
+      })
+      .sort(function (x, y) {
+        return y.plays - x.plays || (x.album < y.album ? -1 : 1);
+      });
 
     var featuredList = artistList
       .filter(function (a) { return a.asFeatured > 0; })
@@ -212,5 +347,7 @@
     };
   }
 
+  SS.buildAlbumConsolidation = buildAlbumConsolidation;
+  SS.buildAlbumVersions = buildAlbumVersions;
   SS.computeStats = computeStats;
 })(typeof window !== 'undefined' ? window : typeof globalThis !== 'undefined' ? globalThis : this);

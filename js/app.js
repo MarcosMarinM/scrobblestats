@@ -31,11 +31,14 @@
   var state = {
     parsed: null,
     baseline: null,
+    albumConsolidation: null,
+    albumVersions: null,
     songIndex: new Map(),
     stats: null,
     meta: null,
-    settings: { feats: true, featureDisplay: 'combined' },
+    settings: { feats: true, featureDisplay: 'combined', consolidateSingles: false },
     mappings: [],
+    artistMerges: [],
     range: { mode: 'all' },
     tab: 'overview',
     page: {}
@@ -50,14 +53,20 @@
         if (['combined', 'separate', 'hidden'].indexOf(saved.settings.featureDisplay) >= 0) {
           state.settings.featureDisplay = saved.settings.featureDisplay;
         }
+        state.settings.consolidateSingles = saved.settings.consolidateSingles === true;
       }
       if (Array.isArray(saved.mappings)) state.mappings = saved.mappings;
+      if (Array.isArray(saved.artistMerges)) state.artistMerges = saved.artistMerges;
     }
   } catch (e) { /* localStorage unavailable */ }
 
   function persist() {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ settings: state.settings, mappings: state.mappings }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        settings: state.settings,
+        mappings: state.mappings,
+        artistMerges: state.artistMerges
+      }));
     } catch (e) { /* ignore */ }
   }
 
@@ -104,10 +113,73 @@
     return h('option', { value: value }, label == null ? value : label);
   }
 
-  function pageNumbers(count) {
-    var list = [];
-    for (var i = 1; i <= count; i++) list.push(i);
-    return list;
+  // Text input with an accent-insensitive suggestion list. Filters with SS.key, so
+  // "cancion" matches "Canción" and "mariita" matches "Mariíta".
+  function buildCombo(attrs, items, onEnter) {
+    var input = h('input', attrs);
+    var list = h('ul', { class: 'combo-list' });
+    list.hidden = true;
+    var el = h('div', { class: 'combo' }, [input, list]);
+    var results = [];
+    var active = -1;
+
+    function close() {
+      list.hidden = true;
+      active = -1;
+      results = [];
+    }
+
+    function setActive(i) {
+      active = i;
+      for (var c = 0; c < list.children.length; c++) {
+        list.children[c].className = 'combo-item' + (c === i ? ' active' : '');
+      }
+    }
+
+    function pick(i) {
+      if (i < 0 || i >= results.length) return false;
+      input.value = results[i];
+      close();
+      return true;
+    }
+
+    function refresh() {
+      var q = nameKey(input.value);
+      results = [];
+      for (var i = 0; i < items.length && results.length < 50; i++) {
+        if (!q || nameKey(items[i]).indexOf(q) >= 0) results.push(items[i]);
+      }
+      clear(list);
+      if (!results.length) { close(); return; }
+      results.forEach(function (it, idx) {
+        list.appendChild(h('li', {
+          class: 'combo-item', text: it,
+          onMouseDown: function (e) { e.preventDefault(); pick(idx); }
+        }));
+      });
+      list.hidden = false;
+      active = -1;
+    }
+
+    input.addEventListener('input', refresh);
+    input.addEventListener('focus', refresh);
+    input.addEventListener('blur', function () { setTimeout(close, 120); });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (list.hidden) refresh(); else setActive(Math.min(active + 1, results.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!list.hidden) setActive(Math.max(active - 1, 0));
+      } else if (e.key === 'Enter') {
+        if (!list.hidden && active >= 0) { e.preventDefault(); pick(active); }
+        else if (onEnter) { e.preventDefault(); onEnter(); }
+      } else if (e.key === 'Escape') {
+        close();
+      }
+    });
+
+    return { el: el, input: input };
   }
 
   /* Components */
@@ -167,11 +239,23 @@
     if (pages > 1) {
       var from = start + 1;
       var to = Math.min(start + PAGE_SIZE, items.length);
-      var pageSel = h('select', { class: 'page-select' }, pageNumbers(pages).map(function (p) { return opt(String(p), String(p)); }));
-      pageSel.value = String(page);
-      pageSel.addEventListener('change', function () {
-        state.page[tabId] = Number(pageSel.value);
-        render();
+      var pageInput = h('input', {
+        type: 'number', class: 'page-input', min: '1', max: String(pages),
+        value: String(page), 'aria-label': 'Page number'
+      });
+      function jump() {
+        var v = Math.round(Number(pageInput.value));
+        if (isNaN(v)) v = page;
+        v = Math.min(Math.max(1, v), pages);
+        pageInput.value = String(v);
+        if (v !== page) {
+          state.page[tabId] = v;
+          render();
+        }
+      }
+      pageInput.addEventListener('change', jump);
+      pageInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); jump(); }
       });
       wrap.appendChild(h('div', { class: 'pager' }, [
         h('button', {
@@ -182,7 +266,7 @@
         h('span', { class: 'pager-info', text: 'Showing ' + num(from) + ' to ' + num(to) + ' of ' + num(items.length) }),
         h('span', { class: 'pager-jump' }, [
           h('span', { text: 'Page' }),
-          pageSel,
+          pageInput,
           h('span', { text: 'of ' + pages })
         ]),
         h('button', {
@@ -333,6 +417,28 @@
     return m;
   }
 
+  // Artist aliases: maps a credited artist key to the name it is counted under.
+  function buildArtistMap() {
+    if (!state.artistMerges.length) return null;
+    var direct = new Map();
+    state.artistMerges.forEach(function (m) {
+      if (!m || !m.from || !m.into) return;
+      direct.set(nameKey(m.from), m.into);
+    });
+    var map = new Map();
+    direct.forEach(function (into, fromKey) {
+      var target = into;
+      var seen = {};
+      var guard = 0;
+      while (direct.has(nameKey(target)) && !seen[nameKey(target)] && guard++ < 50) {
+        seen[nameKey(target)] = 1;
+        target = direct.get(nameKey(target));
+      }
+      map.set(fromKey, { key: nameKey(target), name: target });
+    });
+    return map;
+  }
+
   function indexSongs() {
     state.songIndex = new Map();
     state.baseline.topTracks.forEach(function (t) {
@@ -354,6 +460,14 @@
     featsChk.checked = state.settings.feats !== false;
     featsChk.addEventListener('change', function () {
       state.settings.feats = featsChk.checked;
+      persist();
+      recompute();
+    });
+
+    var consolidateChk = h('input', { type: 'checkbox', id: 'opt-consolidate' });
+    consolidateChk.checked = state.settings.consolidateSingles === true;
+    consolidateChk.addEventListener('change', function () {
+      state.settings.consolidateSingles = consolidateChk.checked;
       persist();
       recompute();
     });
@@ -444,16 +558,11 @@
     toInput.addEventListener('change', onCustomDate);
     updateContextual();
 
-    var songInput = h('input', { type: 'text', list: 'songlist', id: 'map-song', placeholder: 'Track (type and pick)...' });
-    var artistInput = h('input', { type: 'text', list: 'artistlist', id: 'map-artist', placeholder: 'Artist to credit...' });
+    var songCombo = buildCombo({ type: 'text', id: 'map-song', placeholder: 'Track (type and pick)...' }, Array.from(state.songIndex.keys()), addMapping);
+    var artistCombo = buildCombo({ type: 'text', id: 'map-artist', placeholder: 'Artist to credit...' }, state.baseline.topArtists.map(function (a) { return a.name; }), addMapping);
+    var songInput = songCombo.input;
+    var artistInput = artistCombo.input;
     var addBtn = h('button', { type: 'button', class: 'btn', text: 'Add relationship', onClick: addMapping });
-    songInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addMapping(); } });
-    artistInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addMapping(); } });
-
-    var datalists = h('span', { class: 'datalists' }, [
-      h('datalist', { id: 'songlist' }, Array.from(state.songIndex.keys()).map(function (d) { return opt(d, d); })),
-      h('datalist', { id: 'artistlist' }, state.baseline.topArtists.map(function (a) { return opt(a.name, a.name); }))
-    ]);
 
     var mapList = h('ul', { class: 'mapping-list', id: 'maplist' });
 
@@ -464,10 +573,10 @@
       var tk = state.songIndex.get(songVal);
       var resolved = songVal;
       if (!tk) {
-        var needle = songVal.toLowerCase();
+        var needle = nameKey(songVal);
         state.songIndex.forEach(function (k, disp) {
           if (tk) return;
-          if (disp.toLowerCase().indexOf(needle) >= 0) { tk = k; resolved = disp; }
+          if (nameKey(disp).indexOf(needle) >= 0) { tk = k; resolved = disp; }
         });
       }
       if (!tk) {
@@ -517,6 +626,9 @@
         version: 1,
         mappings: state.mappings.map(function (x) {
           return { trackKey: x.trackKey, song: x.song, artist: x.artist };
+        }),
+        artistMerges: state.artistMerges.map(function (m) {
+          return { from: m.from, into: m.into };
         })
       };
       var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -560,14 +672,30 @@
           state.mappings.push({ trackKey: tk, song: song || tk, artist: artist });
           added++;
         });
-        if (added) {
+        var mergesAdded = 0;
+        if (Array.isArray(data.artistMerges)) {
+          data.artistMerges.forEach(function (m) {
+            if (!m || typeof m !== 'object') return;
+            var from = typeof m.from === 'string' ? m.from.trim() : '';
+            var into = typeof m.into === 'string' ? m.into.trim() : '';
+            if (!from || !into || nameKey(from) === nameKey(into)) return;
+            var dupMerge = state.artistMerges.some(function (x) {
+              return nameKey(x.from) === nameKey(from) && nameKey(x.into) === nameKey(into);
+            });
+            if (dupMerge) return;
+            state.artistMerges.push({ from: from, into: into });
+            mergesAdded++;
+          });
+        }
+        if (added || mergesAdded) {
           persist();
           renderMappingList(mapList);
+          renderMergeList(mergeList);
           recompute();
         }
-        statusEl.textContent = added
-          ? 'Loaded ' + num(added) + ' relationship(s) from the config.'
-          : 'No new relationships found in that config.';
+        statusEl.textContent = added || mergesAdded
+          ? 'Loaded ' + num(added + mergesAdded) + ' setting(s) from the config.'
+          : 'Nothing new found in that config.';
       }).catch(function (err) {
         statusEl.textContent = 'Could not read that config: ' + err.message;
       });
@@ -600,6 +728,15 @@
     );
     controlsEl.appendChild(
       h('div', { class: 'control' }, [
+        consolidateChk,
+        h('label', { for: 'opt-consolidate' }, [
+          'Consolidate singles into albums ',
+          h('span', { class: 'control-hint', text: '(counts a single\'s plays under its album)' })
+        ])
+      ])
+    );
+    controlsEl.appendChild(
+      h('div', { class: 'control' }, [
         h('span', { class: 'control-label', text: 'Time range' }),
         periodSel,
         monthWrap,
@@ -616,16 +753,94 @@
       h('div', { class: 'control-mapping' }, [
         h('p', { class: 'control-title', text: 'Credit an artist by hand' }),
         h('p', { class: 'control-hint', text: 'Pick a track from your data and the artist that should count for it too. Choose from the list or type a new one.' }),
-        h('div', { class: 'control' }, [songInput, artistInput, addBtn]),
+        h('div', { class: 'control' }, [songCombo.el, artistCombo.el, addBtn]),
         h('div', { class: 'control' }, [
           h('span', { class: 'control-label', text: 'Config file' }),
           exportBtn,
           importBtn,
           importInput
         ]),
-        h('p', { class: 'control-hint', text: 'Export these relationships to a JSON file and load it back to reuse them in any analysis or browser.' }),
-        mapList,
-        datalists
+        h('p', { class: 'control-hint', text: 'Export your manual relationships and artist merges to a JSON file and load it back in any analysis or browser.' }),
+        mapList
+      ])
+    );
+
+    var artistIndex = new Map();
+    state.baseline.topArtists.forEach(function (a) {
+      if (!artistIndex.has(nameKey(a.name))) artistIndex.set(nameKey(a.name), a.name);
+    });
+    var artistNames = state.baseline.topArtists.map(function (a) { return a.name; });
+    var mergeFromCombo = buildCombo({ type: 'text', id: 'merge-from', placeholder: 'Artist...' }, artistNames, addMerge);
+    var mergeIntoCombo = buildCombo({ type: 'text', id: 'merge-into', placeholder: '...same artist' }, artistNames, addMerge);
+    var mergeFrom = mergeFromCombo.input;
+    var mergeInto = mergeIntoCombo.input;
+    var mergeList = h('ul', { class: 'mapping-list' });
+    var mergeBtn = h('button', { type: 'button', class: 'btn', text: 'Unify', onClick: addMerge });
+
+    function resolveArtist(value) {
+      var typed = String(value || '').trim();
+      return typed ? artistIndex.get(nameKey(typed)) || '' : '';
+    }
+
+    function addMerge() {
+      var from = resolveArtist(mergeFrom.value);
+      var into = resolveArtist(mergeInto.value);
+      if (!from || !into) {
+        statusEl.textContent = 'Pick both artists from the list.';
+        return;
+      }
+      if (nameKey(from) === nameKey(into)) return;
+      var dup = state.artistMerges.some(function (m) {
+        return nameKey(m.from) === nameKey(from) && nameKey(m.into) === nameKey(into);
+      });
+      if (!dup) {
+        state.artistMerges.push({ from: from, into: into });
+        persist();
+        renderMergeList(mergeList);
+        recompute();
+      }
+      mergeFrom.value = '';
+      mergeInto.value = '';
+      statusEl.textContent = '';
+    }
+
+    function renderMergeList(ul) {
+      clear(ul);
+      if (!state.artistMerges.length) {
+        ul.appendChild(h('li', { class: 'mapping-empty', text: 'No unified artists yet.' }));
+        return;
+      }
+      state.artistMerges.forEach(function (m, idx) {
+        ul.appendChild(h('li', {}, [
+          h('span', { class: 'mapping-text' }, [h('strong', { text: m.from }), ' is the same as ', h('strong', { text: m.into })]),
+          h('button', {
+            type: 'button',
+            class: 'btn-ghost',
+            text: 'Remove',
+            onClick: function () {
+              state.artistMerges.splice(idx, 1);
+              persist();
+              renderMergeList(ul);
+              recompute();
+            }
+          })
+        ]));
+      });
+    }
+    renderMergeList(mergeList);
+
+    controlsEl.appendChild(
+      h('div', { class: 'control-mapping' }, [
+        h('p', { class: 'control-title', text: 'Unify two artists' }),
+        h('p', { class: 'control-hint', text: 'Pick two names that are the same artist (for example "Lara" and "Lara Ivanova"); their plays are counted together.' }),
+        h('div', { class: 'control' }, [
+          mergeFromCombo.el,
+          h('span', { class: 'control-label', text: 'is the same as' }),
+          mergeIntoCombo.el,
+          mergeBtn
+        ]),
+        h('p', { class: 'control-hint', text: 'Saved with your settings and included in Export config.' }),
+        mergeList
       ])
     );
   }
@@ -658,7 +873,9 @@
   }
 
   function albumItems(stats) {
-    return stats.topAlbums.map(function (a) { return { label: a.album, value: a.plays, sub: a.artist }; });
+    return stats.topAlbums.map(function (a) {
+      return { label: a.album, value: a.plays, sub: a.artist, badge: a.versions > 1 ? '(' + a.versions + ' versions)' : null };
+    });
   }
 
   function featureItems(stats) {
@@ -724,7 +941,8 @@
 
   function panelAlbums(stats) {
     if (!stats.topAlbums.length) return [h('p', { class: 'pending', text: 'No albums in this range.' })];
-    return [card('Most played albums', null, paginated(albumItems(stats), 'albums'))];
+    var sub = state.settings.consolidateSingles ? 'Singles are counted under their album, and single-only releases are hidden.' : null;
+    return [card('Most played albums', sub, paginated(albumItems(stats), 'albums'))];
   }
 
   function panelFeatures(stats) {
@@ -808,7 +1026,14 @@
     setTimeout(function () {
       var t0 = performance.now();
       var filtered = filterByRange(state.parsed.scrobbles, state.range);
-      state.stats = computeStats(filtered, { feats: state.settings.feats, mapping: buildMappingMap() });
+      state.stats = computeStats(filtered, {
+        feats: state.settings.feats,
+        mapping: buildMappingMap(),
+        artistMap: buildArtistMap(),
+        albumMap: state.settings.consolidateSingles ? state.albumConsolidation : null,
+        albumVersions: state.settings.consolidateSingles ? state.albumVersions : null,
+        hideSingles: state.settings.consolidateSingles === true
+      });
       state.meta = { ms: performance.now() - t0, inRange: filtered.length };
       render();
       statusEl.textContent = '';
@@ -826,6 +1051,8 @@
           statusEl.textContent = 'The file did not contain any readable scrobbles.';
           return;
         }
+        state.albumConsolidation = SS.buildAlbumConsolidation(state.parsed.scrobbles);
+        state.albumVersions = SS.buildAlbumVersions(state.parsed.scrobbles);
         state.baseline = computeStats(state.parsed.scrobbles, { feats: true, mapping: buildMappingMap() });
         indexSongs();
         state.tab = 'overview';

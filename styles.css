@@ -250,6 +250,8 @@ main {
   padding: 0;
   display: grid;
   gap: 6px;
+  max-height: 224px;
+  overflow-y: auto;
 }
 
 .mapping-list li {
@@ -277,8 +279,41 @@ main {
   text-overflow: ellipsis;
 }
 
-.datalists {
-  display: none;
+.combo {
+  position: relative;
+  display: inline-block;
+}
+
+.combo-list {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 224px;
+  overflow-y: auto;
+  background: var(--field);
+  border: 1px solid var(--card-line);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+.combo-item {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.combo-item.active,
+.combo-item:hover {
+  background: rgba(123, 47, 247, 0.35);
 }
 
 /* Results */
@@ -389,7 +424,8 @@ main {
   gap: 6px;
 }
 
-.page-select {
+.page-input {
+  width: 68px;
   background: var(--field);
   color: var(--text);
   border: 1px solid var(--card-line);
@@ -397,6 +433,7 @@ main {
   padding: 5px 8px;
   font: inherit;
   font-size: 0.85rem;
+  text-align: center;
 }
 
 .btn-ghost[disabled] {
