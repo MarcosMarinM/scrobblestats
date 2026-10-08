@@ -28,6 +28,8 @@
     { id: 'time', label: 'Time' }
   ];
 
+  var allTimeCache = null;
+
   var state = {
     parsed: null,
     baseline: null,
@@ -884,6 +886,93 @@
     });
   }
 
+  /* Share image data */
+
+  function capitalize(s) {
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  }
+
+  function allTimeStats() {
+    if (!allTimeCache) allTimeCache = computeStats(state.parsed.scrobbles, statsOptions());
+    return allTimeCache;
+  }
+
+  // The share card keeps range labels short: a Spotify year reads "Dec 2025 to Nov 2026"
+  // rather than repeating the "Spotify year" wording that the picker needs.
+  function shareRangeLabel(range) {
+    if (!range || range.mode === 'all') return 'all time';
+    if (range.mode === 'spotifyyear') return 'Dec ' + (range.year - 1) + ' to Nov ' + range.year;
+    return rangeLabel(range);
+  }
+
+  function shareItem(it) {
+    return { label: it.label, sub: it.sub, value: it.value, segments: it.segments };
+  }
+
+  // Builds the card data for one share image. The kind, count and range come from the
+  // share dialog; the shaped lists reuse the panel item builders so the image follows the
+  // same feature settings as the page.
+  function shareData(kind, count, rangeMode) {
+    var stats = rangeMode === 'all' ? allTimeStats() : state.stats;
+    var total = rangeMode === 'all' ? state.parsed.scrobbles.length : state.meta.inRange;
+    var label = capitalize(rangeMode === 'all' ? 'all time' : shareRangeLabel(state.range));
+    var card = {
+      layout: 'list',
+      title: '',
+      subtitle: label,
+      footRight: num(total) + ' scrobbles',
+      sections: [],
+      summary: null
+    };
+
+    function items(list) { return list.map(shareItem); }
+    function take(list, k) { return list.slice(0, k); }
+
+    if (kind === 'overview') {
+      card.layout = 'overview';
+      card.title = 'Your listening';
+      var cells = [
+        { value: num(stats.uniqueArtists), label: 'artists' },
+        { value: num(stats.uniqueTracks), label: 'tracks' },
+        { value: num(stats.uniqueAlbums), label: 'albums' },
+        { value: num(stats.activeDays), label: 'days with music' }
+      ];
+      if (stats.withDate && stats.longestStreak && stats.longestStreak.days) {
+        cells.push({ value: String(stats.longestStreak.days), label: 'day streak' });
+      }
+      if (stats.withDate && stats.peakDay) {
+        cells.push({ value: num(stats.peakDay.count), label: 'busiest day' });
+      }
+      card.summary = { total: num(total), totalLabel: 'scrobbles', cells: cells };
+      card.sections = [{ heading: 'Top artists', items: take(items(artistItems(stats)), 5) }];
+      card.footRight = '';
+    } else if (kind === 'artists') {
+      card.title = 'Top ' + count + ' artists';
+      card.sections = [{ heading: null, items: take(items(artistItems(stats)), count) }];
+    } else if (kind === 'tracks') {
+      card.title = 'Top ' + count + ' tracks';
+      card.sections = [{ heading: null, items: take(items(trackItems(stats)), count) }];
+    } else if (kind === 'albums') {
+      card.title = 'Top ' + count + ' albums';
+      card.sections = [{ heading: null, items: take(items(albumItems(stats)), count) }];
+    } else if (kind === 'artistsTracks') {
+      card.layout = 'split';
+      card.title = 'Artists and tracks';
+      card.sections = [
+        { heading: 'Artists', items: take(items(artistItems(stats)), count) },
+        { heading: 'Tracks', items: take(items(trackItems(stats)), count) }
+      ];
+    } else if (kind === 'albumsArtists') {
+      card.layout = 'split';
+      card.title = 'Albums and artists';
+      card.sections = [
+        { heading: 'Albums', items: take(items(albumItems(stats)), count) },
+        { heading: 'Artists', items: take(items(artistItems(stats)), count) }
+      ];
+    }
+    return card;
+  }
+
   /* Panels */
 
   function artistSub() {
@@ -983,9 +1072,21 @@
       nodes.push(h('div', { class: 'warnings' }, state.parsed.warnings.map(function (w) { return h('p', { text: w }); })));
     }
 
-    nodes.push(h('p', { class: 'range' }, [
-      'Period: ' + rangeLabel(state.range) + ' | showing ' + num(meta.inRange) + ' of ' + num(total) + ' scrobbles' +
-        (meta.ms ? ' | calculated in ' + Math.round(meta.ms) + ' ms' : '')
+    var shareBtn = SS.share && stats.total
+      ? h('button', {
+          type: 'button',
+          class: 'btn-ghost share-open',
+          text: 'Create share image',
+          onClick: function (e) { SS.share.open(shareData, e.currentTarget); }
+        })
+      : null;
+
+    nodes.push(h('div', { class: 'results-meta' }, [
+      h('p', { class: 'range' }, [
+        'Period: ' + rangeLabel(state.range) + ' | showing ' + num(meta.inRange) + ' of ' + num(total) + ' scrobbles' +
+          (meta.ms ? ' | calculated in ' + Math.round(meta.ms) + ' ms' : '')
+      ]),
+      shareBtn
     ]));
 
     if (!stats.total) {
@@ -1020,20 +1121,25 @@
 
   /* Flow */
 
+  function statsOptions() {
+    return {
+      feats: state.settings.feats,
+      mapping: buildMappingMap(),
+      artistMap: buildArtistMap(),
+      albumMap: state.settings.consolidateSingles ? state.albumConsolidation : null,
+      albumVersions: state.settings.consolidateSingles ? state.albumVersions : null,
+      hideSingles: state.settings.consolidateSingles === true
+    };
+  }
+
   function recompute() {
     if (!state.parsed) return;
+    allTimeCache = null;
     statusEl.textContent = 'Recalculating...';
     setTimeout(function () {
       var t0 = performance.now();
       var filtered = filterByRange(state.parsed.scrobbles, state.range);
-      state.stats = computeStats(filtered, {
-        feats: state.settings.feats,
-        mapping: buildMappingMap(),
-        artistMap: buildArtistMap(),
-        albumMap: state.settings.consolidateSingles ? state.albumConsolidation : null,
-        albumVersions: state.settings.consolidateSingles ? state.albumVersions : null,
-        hideSingles: state.settings.consolidateSingles === true
-      });
+      state.stats = computeStats(filtered, statsOptions());
       state.meta = { ms: performance.now() - t0, inRange: filtered.length };
       render();
       statusEl.textContent = '';

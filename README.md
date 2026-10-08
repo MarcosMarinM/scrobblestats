@@ -66,6 +66,12 @@ are not treated as features. After the marker, several featured names can be spl
 The results are split into tabs (Overview, Artists, Tracks, Albums, Features, Time) instead of one
 long page. The rankings show 25 rows per page and you can page through the whole list.
 
+**Create share image** turns the current view into a story sized poster (1080 by 1920) that you can
+save as a PNG and post. You choose what it shows (Overview, Top artists, Top tracks, Top albums,
+Artists and tracks, or Albums and artists), how many items (5, 10, 15, 20 or 25), the range (this
+range or all time) and the style (Paper, Ink or Red). The image is drawn on a canvas in your browser, so it works
+the same offline and nothing is uploaded.
+
 ## CSV format
 
 It accepts the usual export from [lastfmstats.com](https://lastfmstats.com) and similar files:
@@ -88,6 +94,7 @@ js/text.js             Text normalisation (comparison keys, feature stripping, t
 js/csv.js              CSV parsing, column and date detection
 js/artists.js          Artist attribution (main artists, features and manual extras)
 js/stats.js            Wrapped style aggregations
+js/share.js            Share image: 1080 by 1920 canvas card and options dialog
 js/app.js              UI: file loading, controls and rendering
 test/fixtures/mini.csv Small CSV with feature cases for manual testing
 ```
